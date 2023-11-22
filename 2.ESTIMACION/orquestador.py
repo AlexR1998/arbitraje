@@ -46,7 +46,7 @@ resultado_c=[]
 for modelo in modelos:
     print(modelo)
     print(f'- GENERANDO CUADRO DE COINTEGRACIÓN {modelo}')
-    resultado=c.validador(data,pairs,model=modelo,ingestar=True)
+    #resultado=c.validador(data,pairs,model=modelo,ingestar=True)
 
 #==========================================================================================================================
 #   CREACIÓN DE ALERTAS
@@ -73,7 +73,7 @@ for modelo in modelos:
 #==========================================================================================================================
 
     print(f'- ACTUALIZANDO ESTADO DE ALERTAS GENERADAS {modelo}')
-    cierres=c.follow_alertas(m_timeframe,fecha,model=modelo,ingestar=True)
+    cierres=c.follow_alertas(df=df,timeframe=m_timeframe,fecha_final=fecha,model=modelo,ingestar=True)
 
     #resultado_c.append(resultado)
     alertas_c.append(alertas)

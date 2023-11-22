@@ -187,8 +187,9 @@ class cointegracion():
 
         coint=[]
         #Itera entre uno o multiples pares, según sea el input.
-        for i in pairs:
-            print(i)
+        pbar=tqdm(pairs)
+        for i in pbar:
+            pbar.set_description(f'{i[1]}~{i[1]}')
             d=df[[i[0],i[1]]]
 
             #FILTRA LAS SERIES DESDE EL PRIMER VALOR NO NULO PARA AMBAS
@@ -275,7 +276,7 @@ class cointegracion():
 #             df,_=self.data_reader_mt5(quotes,fecha_inicial,fecha_final,timeframe)`
 
         alerta=[]
-        for p in tqdm(pares.iterrows()):
+        for p in pares.iterrows():
             d=df[[p[1]['X'],p[1]['Y']]]
             d=d.loc[d.notnull().all(axis=1).loc[lambda x : x==True].idxmin():]
             d=d.astype(float)
@@ -340,7 +341,7 @@ class cointegracion():
         return alerta
     
     
-    def follow_alertas(self, timeframe,fecha_final,model='engle-granger',ingestar=False,alertas=pd.DataFrame()):
+    def follow_alertas(self, df, timeframe,fecha_final,model='engle-granger',ingestar=False,alertas=pd.DataFrame()):
         '''
         Valida la existencia de cointegración en uno o mas pares de activos
 
@@ -357,7 +358,7 @@ class cointegracion():
         Returns:
         - DataFrame: Dataframe con las alertas generadas.
         '''
-
+        data=df.copy()
         if alertas.empty:
             conn=sqlite3.connect(self.__db)
             try:
@@ -396,7 +397,11 @@ class cointegracion():
                     conn.close()
 
         resultado=[]
+        pbar=tqdm()
         for a in alertas.iterrows():
+            pbar.set_description(f"{a[1]['Y']}~{a[1]['X']}")
+
+
             cerrado=False
             #fecha_evaluacion=a[1]['ULTIMA_EVALUACION'] if (a[1]['ULTIMA_EVALUACION'] !=None and not math.isnan(a[1]['ULTIMA_EVALUACION'])) else a[1]['FECHA']    
             fecha_evaluacion=a[1]['ULTIMA_EVALUACION'] if a[1]['ULTIMA_EVALUACION'] !=None else a[1]['FECHA']
@@ -408,8 +413,13 @@ class cointegracion():
                     update_alertas(a,fecha_final,model,cierre=False)
                 continue
 
-            df,_=self.data_reader_mt5([a[1]['X'],a[1]['Y']],fecha_evaluacion,fecha_final,timeframe)
-            for d in df.iterrows():
+
+            data=df[[a[1]['X'],a[1]['Y']]]
+            data=data.loc[(data.index>=fecha_evaluacion) & (data.index<=fecha_final)]
+            data=data.loc[data.notnull().all(axis=1).loc[lambda x : x==True].idxmin():]
+            data=data.astype(float)
+            #df,_=self.data_reader_mt5([a[1]['X'],a[1]['Y']],fecha_evaluacion,fecha_final,timeframe)
+            for d in data.iterrows():
                 if (a[1]['DIRECCION_OP']=='LARGO Y' and d[1][a[1]['Y']] >= a[1]['TP_Y']) or (a[1]['DIRECCION_OP']=='CORTO Y' and d[1][a[1]['Y']] <= a[1]['TP_Y']):
                     resultado.append([a[1]['X'],a[1]['Y'],'TP',a[1]['DIRECCION_OP'],a[1]['ENTRADA_X'],a[1]['ENTRADA_Y'],d[1][a[1]['X']],a[1]['TP_Y'],a[1]['FECHA'],d[0].date(),model])
                     cerrado=True
