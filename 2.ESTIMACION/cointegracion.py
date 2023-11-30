@@ -14,12 +14,14 @@ from sklearn.metrics import r2_score
 import math
 
 class cointegracion():
-    def __init__(self,p_critico,db_path):
+    def __init__(self,p_critico,db_path,comision=0.03,iva_comision=0.19,swap=0.0):
         self.__p_critico=p_critico
         self.__db=db_path
         self.__estad_dw={0.01:0.511,0.05:0.386,0.1:0.322}
         self.__estad_adf={'constante':{0.01:-2.5658,0.05:-1.9393,0.1:-1.6156},'sin_constante':{0.01:-3.9001,0.05:-3.3377,0.1:-3.0462}}
         self.__insumo_path=r'C:\Users\Alex\Desktop\Investment\Scripts\2.Quant Analysis\2. Modelos\3.Arbitraje\Arbitraje 2.0\INSUMOS'
+        self.__comision_total=comision*(1+iva_comision)
+        self.__swap=swap
 
     def __orden_integracion(self,x,p_critico):
         d=-1
@@ -232,14 +234,12 @@ class cointegracion():
                 conn.close()
         return result
 
-    def genera_alertas(self, df, years,timeframe,fecha_final,model='engle-granger',desvest=3,rolling_desvest=252,filtros='',ingestar=False,pares=pd.DataFrame(),trades_export=False):
+    def genera_alertas(self, df, fecha_final,model='engle-granger',desvest=3,rolling_desvest=252,filtros='',ingestar=False,pares=pd.DataFrame(),trades_export=False, ret_exigido=0.0):
         '''
         Genera alertas de trading solo en la fecha_final ingresada, evaluando los pares marcados como relacionados según el modelo implementado.
 
         Args:
         - df (DataFrame): DataFrame con los datos de precio a utilizar en los cálculos. 
-        - years (int): Modelo a ejecutar (johansen, engle-granger). Default = 'engle-granger'.
-        - timeframe (mt5.TIMEFRAME): Timeframe de los datos solicitados.
         - fecha_final (datetime): Fecha final a evaluar existencia de alerta de trading.
         - model (string): Modelo a ejecutar (johansen, engle-granger). Default = 'engle-granger'.
         - desvest (int): Numero de desviaciones estandar a utilizar en la evaluación de la alerta.
@@ -247,7 +247,6 @@ class cointegracion():
         - filtros (str:sql): Filtros a aplicar en la consulta de los pares a valorar.
         - ingestar (boolean, opcional): Ingestar resultados en base de datos. Default= False.
         - pares (DataFrame, opcional): DataFrame X,Y con los pares relacionados y ordenados de este modo. 
-        
         - trades_export (boolean, opcional): Decide si exportar o no archivos detalle con los cálculos utilizados en cada trade. 
         Returns:
         - DataFrame: Dataframe con las alertas generadas.
@@ -269,16 +268,12 @@ class cointegracion():
             finally:
                 conn.close()
         
-        quotes=list(dict.fromkeys(list(pares['X'].drop_duplicates())+list(pares['Y'].drop_duplicates())))
-
-# `        if df.empty:
-#             fecha_inicial=datetime(year=fecha_final.year-years,month=fecha_final.month,day=fecha_final.day)
-#             df,_=self.data_reader_mt5(quotes,fecha_inicial,fecha_final,timeframe)`
-
         alerta=[]
         for p in pares.iterrows():
             d=df[[p[1]['X'],p[1]['Y']]]
             d=d.loc[d.notnull().all(axis=1).loc[lambda x : x==True].idxmin():]
+
+                
             d=d.astype(float)
             
             if model=='engle-granger':
@@ -304,18 +299,26 @@ class cointegracion():
                 entrada_y=d.loc[d.index[-1],p[1]['Y']]
                 entrada_x=d.loc[d.index[-1],p[1]['X']]
                 sl=entrada_y+d.loc[d.index[-1],'resid']
+                #VALIDA RETORNO MÍNIMO
+                if abs(tp/entrada_y-1)<ret_exigido:
+                    continue
                 alerta.append([p[1]['X'],p[1]['Y'],entrada_x,entrada_y,tp,sl,'CORTO Y'])
                 if trades_export:
-                    d.to_excel(trades_path+fr"\{p[1]['Y']}-{p[1]['X']} {fecha_final.date()}.xlsx")
+                    d.to_hdf(trades_path+fr"\{p[1]['Y']}-{p[1]['X']} {fecha_final.date()}.h5",key='df',mode='w')
+                    # d.to_excel(trades_path+fr"\{p[1]['Y']}-{p[1]['X']} {fecha_final.date()}.xlsx")
             #LARGO Y
             elif (d.loc[d.index[-2],'resid']<d.loc[d.index[-2],'stdev_inf']) and (d.loc[d.index[-1],'resid']>=d.loc[d.index[-1],'stdev_inf']) and (d.loc[d.index[-1],'resid']<0):
                 tp=d.loc[d.index[-1],'y_est']
                 entrada_y=d.loc[d.index[-1],p[1]['Y']]
                 entrada_x=d.loc[d.index[-1],p[1]['X']]
                 sl=entrada_y+d.loc[d.index[-1],'resid']
+                #VALIDA RETORNO MÍNIMO
+                if abs(tp/entrada_y-1)<ret_exigido:
+                    continue
                 alerta.append([p[1]['X'],p[1]['Y'],entrada_x,entrada_y,tp,sl,'LARGO Y'])
                 if trades_export:
-                    d.to_excel(trades_path+fr"\{p[1]['Y']}-{p[1]['X']} {fecha_final.date()}.xlsx")
+                    d.to_hdf(trades_path+fr"\{p[1]['Y']}-{p[1]['X']} {fecha_final.date()}.h5",key='df',mode='w')
+                    # d.to_excel(trades_path+fr"\{p[1]['Y']}-{p[1]['X']} {fecha_final.date()}.xlsx")
 
         alerta=pd.DataFrame(data=alerta,columns=['X','Y','ENTRADA_X','ENTRADA_Y','TP_Y','SL_Y','DIRECCION_OP'])
         alerta['FECHA']=fecha_final.date()
@@ -339,14 +342,14 @@ class cointegracion():
                 conn.close()
 
         return alerta
-    
-    
-    def follow_alertas(self, df, timeframe,fecha_final,model='engle-granger',ingestar=False,alertas=pd.DataFrame()):
+
+    def follow_alertas(self,df, high, low, fecha_final,model='engle-granger',ingestar=False,alertas=pd.DataFrame()):
         '''
         Valida la existencia de cointegración en uno o mas pares de activos
 
         Args:
-        - timeframe (mt5.TIMEFRAME): Timeframe de los datos solicitados.
+        - high (DataFrame): Pandas DataFrame con los máximos de cada título procesado.
+        - low (DataFrame): Pandas DataFrame con los míniimos de cada título procesado.
         - fecha_final (datetime): Fecha final a evaluar existencia de alerta de trading.
         - model (string): Modelo a ejecutar (johansen, engle-granger). Default = 'engle-granger'.
         - desvest (int): Numero de desviaciones estandar a utilizar en la evaluación de la alerta.
@@ -358,7 +361,6 @@ class cointegracion():
         Returns:
         - DataFrame: Dataframe con las alertas generadas.
         '''
-        data=df.copy()
         if alertas.empty:
             conn=sqlite3.connect(self.__db)
             try:
@@ -380,7 +382,7 @@ class cointegracion():
                 conn.close()
 
         def guarda_resultados(df):
-            data=pd.DataFrame(data=df,columns=['X','Y','RESULTADO','DIRECCION_OP','ENTRADA_X','ENTRADA_Y','SALIDA_X','SALIDA_Y','FECHA_ENTRADA','FECHA_SALIDA','MODELO'])
+            data=pd.DataFrame(data=df,columns=['X','Y','RESULTADO','DIRECCION_OP','ENTRADA_X','ENTRADA_Y','SALIDA_X','SALIDA_Y','FECHA_ENTRADA','FECHA_SALIDA','MODELO','RETORNO_Y','RETORNO_X','RETORNO_TOTAL','RETORNO_X_NETO','RETORNO_Y_NETO','RETORNO_TOTAL_NETO'])
             if ingestar and len(data)!=0:
                 conn=sqlite3.connect(self.__db)
                 c=conn.cursor()
@@ -400,11 +402,10 @@ class cointegracion():
         pbar=tqdm()
         for a in alertas.iterrows():
             pbar.set_description(f"{a[1]['Y']}~{a[1]['X']}")
-
-
             cerrado=False
-            #fecha_evaluacion=a[1]['ULTIMA_EVALUACION'] if (a[1]['ULTIMA_EVALUACION'] !=None and not math.isnan(a[1]['ULTIMA_EVALUACION'])) else a[1]['FECHA']    
-            fecha_evaluacion=a[1]['ULTIMA_EVALUACION'] if a[1]['ULTIMA_EVALUACION'] !=None else a[1]['FECHA']
+
+            #fecha_evaluacion=a[1]['ULTIMA_EVALUACION'] if a[1]['ULTIMA_EVALUACION'] !=None else a[1]['FECHA']
+            fecha_evaluacion=a[1]['FECHA']
             fecha_evaluacion=datetime.strptime(fecha_evaluacion,'%Y-%m-%d')
             
             if fecha_evaluacion==fecha_final:
@@ -414,18 +415,43 @@ class cointegracion():
                 continue
 
 
-            data=df[[a[1]['X'],a[1]['Y']]]
-            data=data.loc[(data.index>=fecha_evaluacion) & (data.index<=fecha_final)]
-            data=data.loc[data.notnull().all(axis=1).loc[lambda x : x==True].idxmin():]
-            data=data.astype(float)
-            #df,_=self.data_reader_mt5([a[1]['X'],a[1]['Y']],fecha_evaluacion,fecha_final,timeframe)
-            for d in data.iterrows():
-                if (a[1]['DIRECCION_OP']=='LARGO Y' and d[1][a[1]['Y']] >= a[1]['TP_Y']) or (a[1]['DIRECCION_OP']=='CORTO Y' and d[1][a[1]['Y']] <= a[1]['TP_Y']):
-                    resultado.append([a[1]['X'],a[1]['Y'],'TP',a[1]['DIRECCION_OP'],a[1]['ENTRADA_X'],a[1]['ENTRADA_Y'],d[1][a[1]['X']],a[1]['TP_Y'],a[1]['FECHA'],d[0].date(),model])
-                    cerrado=True
+            data_h=high[[a[1]['X'],a[1]['Y']]]
+            data_l=low[[a[1]['X'],a[1]['Y']]]
+            data_c=df[[a[1]['X'],a[1]['Y']]]
+            data_h=data_h.loc[(data_h.index>=fecha_evaluacion) & (data_h.index<=fecha_final)]
+            data_l=data_l.loc[(data_l.index>=fecha_evaluacion) & (data_l.index<=fecha_final)]
+            data_c=data_c.loc[(data_c.index>=fecha_evaluacion) & (data_c.index<=fecha_final)]
+            data_h=data_h.loc[data_h.notnull().all(axis=1).loc[lambda x : x==True].idxmin():]
+            data_l=data_l.loc[data_l.notnull().all(axis=1).loc[lambda x : x==True].idxmin():]
+            data_c=data_c.loc[data_c.notnull().all(axis=1).loc[lambda x : x==True].idxmin():]
+            data_h=data_h.astype(float)
+            data_l=data_l.astype(float)
+            data_c=data_c.astype(float)
 
-                elif (a[1]['DIRECCION_OP']=='LARGO Y' and d[1][a[1]['Y']] <= a[1]['SL_Y']) or (a[1]['DIRECCION_OP']=='CORTO Y' and d[1][a[1]['Y']] >= a[1]['SL_Y']):
-                    resultado.append([a[1]['X'],a[1]['Y'],'SL',a[1]['DIRECCION_OP'],a[1]['ENTRADA_X'],a[1]['ENTRADA_Y'],d[1][a[1]['X']],a[1]['SL_Y'],a[1]['FECHA'],d[0].date(),model])
+            for h,l,c in zip(data_h.iterrows(), data_l.iterrows(), data_c.iterrows()):
+                #TP
+                if (a[1]['DIRECCION_OP']=='LARGO Y' and h[1][a[1]['Y']] >= a[1]['TP_Y']) or (a[1]['DIRECCION_OP']=='CORTO Y' and l[1][a[1]['Y']] <= a[1]['TP_Y']):
+                    retorno_y=((a[1]['TP_Y']/a[1]['ENTRADA_Y'])-1)*np.where(a[1]['DIRECCION_OP']=='CORTO Y',-1,1)
+                    retorno_y_neto=(1+retorno_y)*(1-self.__comision_total)-1
+                    retorno_x=((h[1][a[1]['X']]/a[1]['ENTRADA_X'])-1)*np.where(a[1]['DIRECCION_OP']=='CORTO Y',1,-1)
+                    retorno_x_neto=(1+retorno_x)*(1-self.__comision_total)-1
+                    retorno_total=retorno_y+retorno_x
+                    retorno_total_neto=retorno_y_neto+retorno_x_neto
+                    res= 'TP' if retorno_total>=0 else 'SL'
+
+                    resultado.append([a[1]['X'],a[1]['Y'],res,a[1]['DIRECCION_OP'],a[1]['ENTRADA_X'],a[1]['ENTRADA_Y'],h[1][a[1]['X']],a[1]['TP_Y'],a[1]['FECHA'],h[0].date(),model,retorno_y,retorno_x,retorno_total,retorno_x_neto,retorno_y_neto,retorno_total_neto])
+                    cerrado=True
+                #SL
+                elif (a[1]['DIRECCION_OP']=='LARGO Y' and l[1][a[1]['Y']] <= a[1]['SL_Y']) or (a[1]['DIRECCION_OP']=='CORTO Y' and h[1][a[1]['Y']] >= a[1]['SL_Y']):
+                    retorno_y=((a[1]['SL_Y']/a[1]['ENTRADA_Y'])-1)*np.where(a[1]['DIRECCION_OP']=='CORTO Y',-1,1)
+                    retorno_y_neto=(1+retorno_y)*(1-self.__comision_total)-1
+                    retorno_x=((c[1][a[1]['X']]/a[1]['ENTRADA_X'])-1)*np.where(a[1]['DIRECCION_OP']=='CORTO Y',1,-1)
+                    retorno_x_neto=(1+retorno_x)*(1-self.__comision_total)-1
+                    retorno_total=retorno_y+retorno_x
+                    retorno_total_neto=retorno_y_neto+retorno_x_neto
+                    res= 'TP' if retorno_total>=0 else 'SL'
+                    
+                    resultado.append([a[1]['X'],a[1]['Y'],res,a[1]['DIRECCION_OP'],a[1]['ENTRADA_X'],a[1]['ENTRADA_Y'],c[1][a[1]['X']],a[1]['SL_Y'],a[1]['FECHA'],h[0].date(),model,retorno_y,retorno_x,retorno_total,retorno_x_neto,retorno_y_neto,retorno_total_neto])
                     cerrado=True
                 if cerrado:
                     if ingestar:
@@ -434,8 +460,9 @@ class cointegracion():
                     break
             if ingestar:
                 update_alertas(a,fecha_final,model,cierre=False)
-        resultado=pd.DataFrame(data=resultado,columns=['X','Y','RESULTADO','DIRECCION_OP','ENTRADA_X','ENTRADA_Y','SALIDA_X','SALIDA_Y','FECHA_ENTRADA','FECHA_SALIDA','MODELO'])
+        resultado=pd.DataFrame(data=resultado,columns=['X','Y','RESULTADO','DIRECCION_OP','ENTRADA_X','ENTRADA_Y','SALIDA_X','SALIDA_Y','FECHA_ENTRADA','FECHA_SALIDA','MODELO','RETORNO_Y','RETORNO_X','RETORNO_TOTAL','RETORNO_X_NETO','RETORNO_Y_NETO','RETORNO_TOTAL_NETO'])
         return resultado
 
 
-
+#PENDIENTES
+    #GENERALIZAR LAS REGLAS DE TRADING PARA INTERCAMBIAR ENTRE UNAS U OTRAS ¿?
